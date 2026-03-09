@@ -1,17 +1,17 @@
 """비정형 자산 수집 RAG 파이프라인.
 
-Step 1: RAGConfig 추출 — 매직 넘버를 설정 객체로 교체.
-아직 중복 코드(청킹/임베딩/DB저장)는 process_pdf/web/csv에 남아있다.
+Step 2: DocumentLoader, TextChunker 추출 — 3회 중복 로딩·청킹 로직 제거.
+임베딩 API 호출과 DB 저장 코드는 아직 인라인으로 남아있다.
 """
 import os
-import re
-import csv
 import json
 import hashlib
 import sqlite3
 import requests
 from datetime import datetime
 from config import RAGConfig
+from document_loader import DocumentLoader
+from text_chunker import TextChunker
 
 
 processed_count = 0
@@ -23,8 +23,9 @@ class RAGSystem:
 
     def __init__(self, config: RAGConfig | None = None):
         self.config = config or RAGConfig()
+        self.loader = DocumentLoader()
+        self.chunker = TextChunker(self.config)
         self.documents = []
-        self.chunks = []
         self.embeddings = []
         self._init_db()
 
@@ -45,205 +46,67 @@ class RAGSystem:
         """)
         db_connection.commit()
 
-    def process_pdf(self, file_path: str) -> dict:
-        global processed_count, error_log
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                text = f.read()
-        except Exception as e:
-            error_log.append(f"PDF 읽기 실패: {file_path} - {e}")
-            return {"status": "error", "message": str(e)}
-
-        if len(text) == 0:
-            return {"status": "error", "message": "빈 파일"}
-
-        doc_id = hashlib.md5(text.encode()).hexdigest()
-
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + self.config.chunk_size
-            chunk = text[start:end]
-            if len(chunk.strip()) > 0:
-                chunks.append({
-                    "content": chunk, "position": len(chunks),
-                    "doc_id": doc_id, "source": file_path, "doc_type": "pdf",
-                })
-            start = end - self.config.chunk_overlap
-
-        api_key = os.environ.get(self.config.api_key_env, "")
-        url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
-        for chunk in chunks:
-            try:
-                resp = requests.post(url, json={
-                    "model": self.config.embed_model,
-                    "content": {"parts": [{"text": chunk["content"]}]}
-                }, timeout=self.config.embed_timeout)
-                if resp.status_code == 200:
-                    chunk["embedding"] = resp.json()["embedding"]["values"]
-                else:
-                    chunk["embedding"] = [0.0] * self.config.embed_dimension
-            except Exception as e:
-                error_log.append(f"임베딩 에러: {e}")
-                chunk["embedding"] = [0.0] * self.config.embed_dimension
-
-        global db_connection
-        db_connection.execute(
-            "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (doc_id, file_path, text[:1000], "pdf",
-             datetime.now().isoformat(), len(chunks), "processed"))
-        for chunk in chunks:
-            chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
-            db_connection.execute(
-                "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
-                (chunk_id, doc_id, chunk["content"],
-                 json.dumps(chunk.get("embedding", [])), chunk["position"]))
-        db_connection.commit()
-
-        processed_count += 1
-        return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
-
-    def process_web(self, url: str) -> dict:
-        global processed_count, error_log
-
-        try:
-            resp = requests.get(url, timeout=self.config.embed_timeout,
-                                headers={"User-Agent": "RAGBot/1.0"})
-            resp.raise_for_status()
-            text = resp.text
-            for tag in ["script", "style", "nav", "footer", "header"]:
-                text = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", text,
-                              flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<[^>]+>", " ", text)
-            text = re.sub(r"\s+", " ", text).strip()
-        except Exception as e:
-            error_log.append(f"웹 크롤링 실패: {url} - {e}")
-            return {"status": "error", "message": str(e)}
-
-        if len(text) == 0:
-            return {"status": "error", "message": "빈 페이지"}
-
-        doc_id = hashlib.md5(text.encode()).hexdigest()
-
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + self.config.chunk_size
-            chunk = text[start:end]
-            if len(chunk.strip()) > 0:
-                chunks.append({
-                    "content": chunk, "position": len(chunks),
-                    "doc_id": doc_id, "source": url, "doc_type": "web",
-                })
-            start = end - self.config.chunk_overlap
-
-        api_key = os.environ.get(self.config.api_key_env, "")
-        embed_url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
-        for chunk in chunks:
-            try:
-                resp = requests.post(embed_url, json={
-                    "model": self.config.embed_model,
-                    "content": {"parts": [{"text": chunk["content"]}]}
-                }, timeout=self.config.embed_timeout)
-                if resp.status_code == 200:
-                    chunk["embedding"] = resp.json()["embedding"]["values"]
-                else:
-                    chunk["embedding"] = [0.0] * self.config.embed_dimension
-            except Exception as e:
-                error_log.append(f"임베딩 에러: {e}")
-                chunk["embedding"] = [0.0] * self.config.embed_dimension
-
-        global db_connection
-        db_connection.execute(
-            "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (doc_id, url, text[:1000], "web",
-             datetime.now().isoformat(), len(chunks), "processed"))
-        for chunk in chunks:
-            chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
-            db_connection.execute(
-                "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
-                (chunk_id, doc_id, chunk["content"],
-                 json.dumps(chunk.get("embedding", [])), chunk["position"]))
-        db_connection.commit()
-
-        processed_count += 1
-        return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
-
-    def process_csv(self, file_path: str) -> dict:
-        global processed_count, error_log
-
-        try:
-            rows = []
-            with open(file_path, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    rows.append(" | ".join(f"{k}: {v}" for k, v in row.items()))
-            text = "\n".join(rows)
-        except Exception as e:
-            error_log.append(f"CSV 읽기 실패: {file_path} - {e}")
-            return {"status": "error", "message": str(e)}
-
-        if len(text) == 0:
-            return {"status": "error", "message": "빈 CSV"}
-
-        doc_id = hashlib.md5(text.encode()).hexdigest()
-
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + self.config.chunk_size
-            chunk = text[start:end]
-            if len(chunk.strip()) > 0:
-                chunks.append({
-                    "content": chunk, "position": len(chunks),
-                    "doc_id": doc_id, "source": file_path, "doc_type": "csv",
-                })
-            start = end - self.config.chunk_overlap
-
-        api_key = os.environ.get(self.config.api_key_env, "")
-        embed_url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
-        for chunk in chunks:
-            try:
-                resp = requests.post(embed_url, json={
-                    "model": self.config.embed_model,
-                    "content": {"parts": [{"text": chunk["content"]}]}
-                }, timeout=self.config.embed_timeout)
-                if resp.status_code == 200:
-                    chunk["embedding"] = resp.json()["embedding"]["values"]
-                else:
-                    chunk["embedding"] = [0.0] * self.config.embed_dimension
-            except Exception as e:
-                error_log.append(f"임베딩 에러: {e}")
-                chunk["embedding"] = [0.0] * self.config.embed_dimension
-
-        global db_connection
-        db_connection.execute(
-            "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (doc_id, file_path, text[:1000], "csv",
-             datetime.now().isoformat(), len(chunks), "processed"))
-        for chunk in chunks:
-            chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
-            db_connection.execute(
-                "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
-                (chunk_id, doc_id, chunk["content"],
-                 json.dumps(chunk.get("embedding", [])), chunk["position"]))
-        db_connection.commit()
-
-        processed_count += 1
-        return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
-
-    def search(self, query: str, top_k: int | None = None) -> list[dict]:
-        k = top_k or self.config.default_top_k
+    def _embed_chunk(self, text: str) -> list[float]:
+        """단일 텍스트의 임베딩 벡터를 반환한다."""
         api_key = os.environ.get(self.config.api_key_env, "")
         url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
         try:
             resp = requests.post(url, json={
                 "model": self.config.embed_model,
-                "content": {"parts": [{"text": query}]}
+                "content": {"parts": [{"text": text}]}
             }, timeout=self.config.embed_timeout)
-            query_embedding = resp.json()["embedding"]["values"]
-        except Exception:
+            if resp.status_code == 200:
+                return resp.json()["embedding"]["values"]
+        except Exception as e:
+            error_log.append(f"임베딩 에러: {e}")
+        return [0.0] * self.config.embed_dimension
+
+    def _ingest(self, source_type: str, source: str) -> dict:
+        """로딩 → 청킹 → 임베딩 → DB 저장 공통 파이프라인."""
+        global processed_count, error_log
+
+        try:
+            text = self.loader.load(source_type, source)
+        except Exception as e:
+            error_log.append(f"[{source_type.upper()}] 로딩 실패: {source} - {e}")
+            return {"status": "error", "message": str(e)}
+
+        if not text.strip():
+            return {"status": "error", "message": "빈 콘텐츠"}
+
+        doc_id = hashlib.md5(text.encode()).hexdigest()
+        chunks = self.chunker.split(text, doc_id, source, source_type)
+        embeddings = [self._embed_chunk(c.content) for c in chunks]
+
+        global db_connection
+        db_connection.execute(
+            "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (doc_id, source, text[:1000], source_type,
+             datetime.now().isoformat(), len(chunks), "processed"))
+        for chunk, embedding in zip(chunks, embeddings):
+            chunk_id = hashlib.md5(chunk.content.encode()).hexdigest()
+            db_connection.execute(
+                "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
+                (chunk_id, doc_id, chunk.content,
+                 json.dumps(embedding), chunk.position))
+        db_connection.commit()
+
+        processed_count += 1
+        return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
+
+    def process_pdf(self, file_path: str) -> dict:
+        return self._ingest("pdf", file_path)
+
+    def process_web(self, url: str) -> dict:
+        return self._ingest("web", url)
+
+    def process_csv(self, file_path: str) -> dict:
+        return self._ingest("csv", file_path)
+
+    def search(self, query: str, top_k: int | None = None) -> list[dict]:
+        k = top_k or self.config.default_top_k
+        query_embedding = self._embed_chunk(query)
+        if all(v == 0.0 for v in query_embedding):
             return []
 
         global db_connection
@@ -284,43 +147,12 @@ class RAGSystem:
             "error_count": len(error_log), "errors": error_log[-10:],
         }
 
-    def export_to_json(self, path: str):
-        global db_connection
-        docs = db_connection.execute("SELECT * FROM documents").fetchall()
-        with open(path, "w") as f:
-            json.dump([{"id": d[0], "source": d[1], "type": d[3]}
-                       for d in docs], f)
-
-    def reindex_all(self):
-        pass
-
-    def validate_embeddings(self):
-        global db_connection
-        cursor = db_connection.execute("SELECT id, embedding FROM chunks")
-        invalid = 0
-        for row in cursor:
-            emb = json.loads(row[1])
-            if len(emb) != self.config.embed_dimension:
-                invalid += 1
-        return invalid
-
     def process_all(self, sources: list[dict]) -> dict:
         results = {"success": 0, "fail": 0, "details": []}
         for source in sources:
-            if source.get("type") == "pdf":
-                result = self.process_pdf(source["path"])
-            elif source.get("type") == "web":
-                result = self.process_web(source["url"])
-            elif source.get("type") == "csv":
-                result = self.process_csv(source["path"])
-            else:
-                results["fail"] += 1
-                results["details"].append({
-                    "status": "error",
-                    "message": f"지원하지 않는 타입: {source.get('type')}"
-                })
-                continue
-
+            source_type = source.get("type", "")
+            src = source.get("path") or source.get("url", "")
+            result = self._ingest(source_type, src)
             if result["status"] == "ok":
                 results["success"] += 1
             else:
