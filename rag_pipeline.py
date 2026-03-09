@@ -1,4 +1,8 @@
-"""비정형 자산 수집 RAG 파이프라인."""
+"""비정형 자산 수집 RAG 파이프라인.
+
+Step 1: RAGConfig 추출 — 매직 넘버를 설정 객체로 교체.
+아직 중복 코드(청킹/임베딩/DB저장)는 process_pdf/web/csv에 남아있다.
+"""
 import os
 import re
 import csv
@@ -7,6 +11,7 @@ import hashlib
 import sqlite3
 import requests
 from datetime import datetime
+from config import RAGConfig
 
 
 processed_count = 0
@@ -16,18 +21,16 @@ db_connection = None
 
 class RAGSystem:
 
-    def __init__(self):
+    def __init__(self, config: RAGConfig | None = None):
+        self.config = config or RAGConfig()
         self.documents = []
         self.chunks = []
         self.embeddings = []
-        self.collection_name = "assets"
-        self.embed_model = "models/text-embedding-004"
-        self.db_path = "/tmp/rag_assets.db"
         self._init_db()
 
     def _init_db(self):
         global db_connection
-        db_connection = sqlite3.connect(self.db_path)
+        db_connection = sqlite3.connect(self.config.db_path)
         db_connection.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY, source TEXT, content TEXT,
@@ -45,7 +48,6 @@ class RAGSystem:
     def process_pdf(self, file_path: str) -> dict:
         global processed_count, error_log
 
-        print(f"[PDF] 처리 시작: {file_path}")
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
@@ -61,44 +63,42 @@ class RAGSystem:
         chunks = []
         start = 0
         while start < len(text):
-            end = start + 500
+            end = start + self.config.chunk_size
             chunk = text[start:end]
             if len(chunk.strip()) > 0:
                 chunks.append({
                     "content": chunk, "position": len(chunks),
                     "doc_id": doc_id, "source": file_path, "doc_type": "pdf",
                 })
-            start = end - 50
+            start = end - self.config.chunk_overlap
 
+        api_key = os.environ.get(self.config.api_key_env, "")
+        url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
         for chunk in chunks:
             try:
-                api_key = os.environ.get("GEMINI_API_KEY", "")
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={api_key}"
                 resp = requests.post(url, json={
-                    "model": "models/text-embedding-004",
+                    "model": self.config.embed_model,
                     "content": {"parts": [{"text": chunk["content"]}]}
-                }, timeout=30)
+                }, timeout=self.config.embed_timeout)
                 if resp.status_code == 200:
                     chunk["embedding"] = resp.json()["embedding"]["values"]
                 else:
-                    chunk["embedding"] = [0.0] * 768
+                    chunk["embedding"] = [0.0] * self.config.embed_dimension
             except Exception as e:
                 error_log.append(f"임베딩 에러: {e}")
-                chunk["embedding"] = [0.0] * 768
+                chunk["embedding"] = [0.0] * self.config.embed_dimension
 
         global db_connection
         db_connection.execute(
             "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
             (doc_id, file_path, text[:1000], "pdf",
-             datetime.now().isoformat(), len(chunks), "processed")
-        )
+             datetime.now().isoformat(), len(chunks), "processed"))
         for chunk in chunks:
             chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
             db_connection.execute(
                 "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
                 (chunk_id, doc_id, chunk["content"],
-                 json.dumps(chunk.get("embedding", [])), chunk["position"])
-            )
+                 json.dumps(chunk.get("embedding", [])), chunk["position"]))
         db_connection.commit()
 
         processed_count += 1
@@ -108,7 +108,7 @@ class RAGSystem:
         global processed_count, error_log
 
         try:
-            resp = requests.get(url, timeout=30,
+            resp = requests.get(url, timeout=self.config.embed_timeout,
                                 headers={"User-Agent": "RAGBot/1.0"})
             resp.raise_for_status()
             text = resp.text
@@ -129,44 +129,42 @@ class RAGSystem:
         chunks = []
         start = 0
         while start < len(text):
-            end = start + 500
+            end = start + self.config.chunk_size
             chunk = text[start:end]
             if len(chunk.strip()) > 0:
                 chunks.append({
                     "content": chunk, "position": len(chunks),
                     "doc_id": doc_id, "source": url, "doc_type": "web",
                 })
-            start = end - 50
+            start = end - self.config.chunk_overlap
 
+        api_key = os.environ.get(self.config.api_key_env, "")
+        embed_url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
         for chunk in chunks:
             try:
-                api_key = os.environ.get("GEMINI_API_KEY", "")
-                embed_url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={api_key}"
                 resp = requests.post(embed_url, json={
-                    "model": "models/text-embedding-004",
+                    "model": self.config.embed_model,
                     "content": {"parts": [{"text": chunk["content"]}]}
-                }, timeout=30)
+                }, timeout=self.config.embed_timeout)
                 if resp.status_code == 200:
                     chunk["embedding"] = resp.json()["embedding"]["values"]
                 else:
-                    chunk["embedding"] = [0.0] * 768
+                    chunk["embedding"] = [0.0] * self.config.embed_dimension
             except Exception as e:
                 error_log.append(f"임베딩 에러: {e}")
-                chunk["embedding"] = [0.0] * 768
+                chunk["embedding"] = [0.0] * self.config.embed_dimension
 
         global db_connection
         db_connection.execute(
             "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
             (doc_id, url, text[:1000], "web",
-             datetime.now().isoformat(), len(chunks), "processed")
-        )
+             datetime.now().isoformat(), len(chunks), "processed"))
         for chunk in chunks:
             chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
             db_connection.execute(
                 "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
                 (chunk_id, doc_id, chunk["content"],
-                 json.dumps(chunk.get("embedding", [])), chunk["position"])
-            )
+                 json.dumps(chunk.get("embedding", [])), chunk["position"]))
         db_connection.commit()
 
         processed_count += 1
@@ -194,57 +192,56 @@ class RAGSystem:
         chunks = []
         start = 0
         while start < len(text):
-            end = start + 500
+            end = start + self.config.chunk_size
             chunk = text[start:end]
             if len(chunk.strip()) > 0:
                 chunks.append({
                     "content": chunk, "position": len(chunks),
                     "doc_id": doc_id, "source": file_path, "doc_type": "csv",
                 })
-            start = end - 50
+            start = end - self.config.chunk_overlap
 
+        api_key = os.environ.get(self.config.api_key_env, "")
+        embed_url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
         for chunk in chunks:
             try:
-                api_key = os.environ.get("GEMINI_API_KEY", "")
-                embed_url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={api_key}"
                 resp = requests.post(embed_url, json={
-                    "model": "models/text-embedding-004",
+                    "model": self.config.embed_model,
                     "content": {"parts": [{"text": chunk["content"]}]}
-                }, timeout=30)
+                }, timeout=self.config.embed_timeout)
                 if resp.status_code == 200:
                     chunk["embedding"] = resp.json()["embedding"]["values"]
                 else:
-                    chunk["embedding"] = [0.0] * 768
+                    chunk["embedding"] = [0.0] * self.config.embed_dimension
             except Exception as e:
                 error_log.append(f"임베딩 에러: {e}")
-                chunk["embedding"] = [0.0] * 768
+                chunk["embedding"] = [0.0] * self.config.embed_dimension
 
         global db_connection
         db_connection.execute(
             "INSERT OR REPLACE INTO documents VALUES (?, ?, ?, ?, ?, ?, ?)",
             (doc_id, file_path, text[:1000], "csv",
-             datetime.now().isoformat(), len(chunks), "processed")
-        )
+             datetime.now().isoformat(), len(chunks), "processed"))
         for chunk in chunks:
             chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
             db_connection.execute(
                 "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
                 (chunk_id, doc_id, chunk["content"],
-                 json.dumps(chunk.get("embedding", [])), chunk["position"])
-            )
+                 json.dumps(chunk.get("embedding", [])), chunk["position"]))
         db_connection.commit()
 
         processed_count += 1
         return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
 
-    def search(self, query: str, top_k: int = 5) -> list[dict]:
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={api_key}"
+    def search(self, query: str, top_k: int | None = None) -> list[dict]:
+        k = top_k or self.config.default_top_k
+        api_key = os.environ.get(self.config.api_key_env, "")
+        url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={api_key}"
         try:
             resp = requests.post(url, json={
-                "model": "models/text-embedding-004",
+                "model": self.config.embed_model,
                 "content": {"parts": [{"text": query}]}
-            }, timeout=30)
+            }, timeout=self.config.embed_timeout)
             query_embedding = resp.json()["embedding"]["values"]
         except Exception:
             return []
@@ -269,7 +266,7 @@ class RAGSystem:
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        return results[:k]
 
     def get_stats(self) -> dict:
         global db_connection, processed_count, error_log
@@ -303,7 +300,7 @@ class RAGSystem:
         invalid = 0
         for row in cursor:
             emb = json.loads(row[1])
-            if len(emb) != 768:
+            if len(emb) != self.config.embed_dimension:
                 invalid += 1
         return invalid
 
