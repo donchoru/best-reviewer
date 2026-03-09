@@ -1,105 +1,177 @@
-"""RAGSystem 단위 테스트."""
-import os
-import json
-import tempfile
+"""Phase 1 단위 테스트 — 각 클래스를 독립적으로 테스트."""
 import pytest
-import rag_pipeline as rp
+from config import RAGConfig
+from document_loader import DocumentLoader
+from text_chunker import TextChunker, Chunk
+from embedder import Embedder
+from vector_store import VectorStore
+from pipeline import RAGPipeline
+from unittest.mock import patch, MagicMock
 
 
-@pytest.fixture(autouse=True)
-def reset_globals():
-    """매 테스트마다 전역 상태 초기화."""
-    rp.processed_count = 0
-    rp.error_log = []
-    rp.db_connection = None
-    yield
+# ── Config ────────────────────────────────────────────────────
+
+class TestConfig:
+
+    def test_defaults(self):
+        cfg = RAGConfig()
+        assert cfg.chunk_size == 500
+        assert cfg.chunk_overlap == 50
+        assert cfg.embed_dimension == 768
+
+    def test_custom(self):
+        cfg = RAGConfig(chunk_size=1000, chunk_overlap=100)
+        assert cfg.chunk_size == 1000
 
 
-@pytest.fixture
-def rag(tmp_path):
-    """임시 DB로 RAGSystem 생성."""
-    system = rp.RAGSystem.__new__(rp.RAGSystem)
-    system.documents = []
-    system.chunks = []
-    system.embeddings = []
-    system.collection_name = "assets"
-    system.embed_model = "models/text-embedding-004"
-    system.db_path = str(tmp_path / "test.db")
-    system._init_db()
-    return system
+# ── DocumentLoader ────────────────────────────────────────────
+
+class TestDocumentLoader:
+
+    def test_load_pdf(self, tmp_path):
+        p = tmp_path / "test.txt"
+        p.write_text("hello world", encoding="utf-8")
+        loader = DocumentLoader()
+        assert loader.load_pdf(str(p)) == "hello world"
+
+    def test_load_csv(self, tmp_path):
+        p = tmp_path / "test.csv"
+        p.write_text("name,val\nalpha,1\nbeta,2\n", encoding="utf-8")
+        loader = DocumentLoader()
+        text = loader.load_csv(str(p))
+        assert "alpha" in text
+        assert "beta" in text
+
+    def test_load_unsupported(self):
+        loader = DocumentLoader()
+        with pytest.raises(ValueError, match="지원하지 않는"):
+            loader.load("xml", "test.xml")
+
+    def test_load_dispatches(self, tmp_path):
+        p = tmp_path / "test.txt"
+        p.write_text("content", encoding="utf-8")
+        loader = DocumentLoader()
+        assert loader.load("pdf", str(p)) == "content"
 
 
-@pytest.fixture
-def sample_file(tmp_path):
-    """테스트용 텍스트 파일."""
-    p = tmp_path / "sample.txt"
-    p.write_text("A" * 1200, encoding="utf-8")
-    return str(p)
+# ── TextChunker ───────────────────────────────────────────────
+
+class TestTextChunker:
+
+    def test_split_basic(self):
+        cfg = RAGConfig(chunk_size=10, chunk_overlap=2)
+        chunker = TextChunker(cfg)
+        chunks = chunker.split("A" * 25, "doc1", "test.txt", "pdf")
+        assert len(chunks) >= 3
+        assert all(isinstance(c, Chunk) for c in chunks)
+
+    def test_split_empty(self):
+        cfg = RAGConfig(chunk_size=10, chunk_overlap=2)
+        chunker = TextChunker(cfg)
+        chunks = chunker.split("", "doc1", "test.txt", "pdf")
+        assert len(chunks) == 0
+
+    def test_overlap(self):
+        cfg = RAGConfig(chunk_size=10, chunk_overlap=3)
+        chunker = TextChunker(cfg)
+        text = "0123456789ABCDEFGHIJ"  # 20자
+        chunks = chunker.split(text, "doc1", "test.txt", "pdf")
+        # 두 번째 청크의 시작이 첫 번째와 겹쳐야 함
+        if len(chunks) >= 2:
+            assert chunks[0].content[-3:] == chunks[1].content[:3]
+
+    def test_chunk_metadata(self):
+        cfg = RAGConfig(chunk_size=100, chunk_overlap=0)
+        chunker = TextChunker(cfg)
+        chunks = chunker.split("test content", "d1", "src.txt", "pdf")
+        assert chunks[0].doc_id == "d1"
+        assert chunks[0].source == "src.txt"
+        assert chunks[0].doc_type == "pdf"
 
 
-@pytest.fixture
-def sample_csv(tmp_path):
-    """테스트용 CSV 파일."""
-    p = tmp_path / "sample.csv"
-    p.write_text("name,value\nalpha,100\nbeta,200\ngamma,300\n", encoding="utf-8")
-    return str(p)
+# ── VectorStore ───────────────────────────────────────────────
 
+class TestVectorStore:
 
-class TestChunking:
-    """청킹 로직 테스트 — process_pdf 내부에 묻혀있어 직접 테스트가 어려움."""
+    def test_cosine_similarity_identical(self):
+        score = VectorStore._cosine_similarity([1, 0, 0], [1, 0, 0])
+        assert abs(score - 1.0) < 0.001
 
-    def test_pdf_creates_chunks(self, rag, sample_file, monkeypatch):
-        monkeypatch.setattr("requests.post", lambda *a, **kw: type("R", (), {
-            "status_code": 200,
-            "json": lambda self: {"embedding": {"values": [0.1] * 768}},
-        })())
-        result = rag.process_pdf(sample_file)
-        assert result["status"] == "ok"
-        assert result["chunks"] >= 3  # 1200자 / 500 = 최소 3개
+    def test_cosine_similarity_orthogonal(self):
+        score = VectorStore._cosine_similarity([1, 0], [0, 1])
+        assert abs(score) < 0.001
 
-    def test_empty_file_returns_error(self, rag, tmp_path):
-        p = tmp_path / "empty.txt"
-        p.write_text("", encoding="utf-8")
-        result = rag.process_pdf(str(p))
-        assert result["status"] == "error"
+    def test_cosine_similarity_zero(self):
+        score = VectorStore._cosine_similarity([0, 0], [1, 1])
+        assert score == 0.0
 
-    def test_csv_creates_chunks(self, rag, sample_csv, monkeypatch):
-        monkeypatch.setattr("requests.post", lambda *a, **kw: type("R", (), {
-            "status_code": 200,
-            "json": lambda self: {"embedding": {"values": [0.1] * 768}},
-        })())
-        result = rag.process_csv(sample_csv)
-        assert result["status"] == "ok"
-        assert result["chunks"] >= 1
-
-
-class TestStats:
-    """통계 테스트."""
-
-    def test_empty_stats(self, rag):
-        stats = rag.get_stats()
-        assert stats["total_documents"] == 0
-        assert stats["total_chunks"] == 0
-
-    def test_stats_after_ingest(self, rag, sample_file, monkeypatch):
-        monkeypatch.setattr("requests.post", lambda *a, **kw: type("R", (), {
-            "status_code": 200,
-            "json": lambda self: {"embedding": {"values": [0.1] * 768}},
-        })())
-        rag.process_pdf(sample_file)
-        stats = rag.get_stats()
+    def test_save_and_stats(self, tmp_path):
+        cfg = RAGConfig(db_path=str(tmp_path / "test.db"))
+        store = VectorStore(cfg)
+        store.save_document("d1", "src.txt", "content", "pdf", 2)
+        stats = store.get_stats()
         assert stats["total_documents"] == 1
-        assert stats["total_chunks"] >= 1
         assert stats["by_type"]["pdf"] == 1
 
+    def test_save_chunks_and_search(self, tmp_path):
+        cfg = RAGConfig(db_path=str(tmp_path / "test.db"))
+        store = VectorStore(cfg)
+        chunks = [Chunk("hello world", 0, "d1", "src.txt", "pdf")]
+        embeddings = [[1.0, 0.0, 0.0]]
+        store.save_chunks(chunks, embeddings)
 
-class TestProcessAll:
-    """일괄 처리 테스트."""
+        results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
+        assert len(results) == 1
+        assert results[0]["content"] == "hello world"
+        assert results[0]["score"] > 0.99
 
-    def test_unsupported_type(self, rag):
-        result = rag.process_all([{"type": "xml", "path": "test.xml"}])
-        assert result["fail"] == 1
 
-    def test_missing_file(self, rag):
-        result = rag.process_all([{"type": "pdf", "path": "/nonexistent.txt"}])
-        assert result["fail"] == 1
+# ── RAGPipeline (통합) ───────────────────────────────────────
+
+class TestPipeline:
+
+    def test_ingest_pdf(self, tmp_path):
+        p = tmp_path / "doc.txt"
+        p.write_text("A" * 600, encoding="utf-8")
+
+        cfg = RAGConfig(db_path=str(tmp_path / "test.db"))
+        pipeline = RAGPipeline(cfg)
+
+        with patch.object(pipeline.embedder, "embed_batch",
+                          return_value=[[0.1] * 768, [0.2] * 768]):
+            result = pipeline.ingest("pdf", str(p))
+
+        assert result["status"] == "ok"
+        assert result["chunks"] >= 2
+
+    def test_ingest_empty(self, tmp_path):
+        p = tmp_path / "empty.txt"
+        p.write_text("", encoding="utf-8")
+
+        cfg = RAGConfig(db_path=str(tmp_path / "test.db"))
+        pipeline = RAGPipeline(cfg)
+        result = pipeline.ingest("pdf", str(p))
+        assert result["status"] == "error"
+
+    def test_ingest_batch_mixed(self, tmp_path):
+        p = tmp_path / "doc.txt"
+        p.write_text("test content here", encoding="utf-8")
+
+        cfg = RAGConfig(db_path=str(tmp_path / "test.db"))
+        pipeline = RAGPipeline(cfg)
+
+        with patch.object(pipeline.embedder, "embed_batch",
+                          return_value=[[0.1] * 768]):
+            results = pipeline.ingest_batch([
+                {"type": "pdf", "path": str(p)},
+                {"type": "xml", "path": "nope.xml"},
+            ])
+
+        assert results["success"] == 1
+        assert results["fail"] == 1
+
+    def test_stats(self, tmp_path):
+        cfg = RAGConfig(db_path=str(tmp_path / "test.db"))
+        pipeline = RAGPipeline(cfg)
+        stats = pipeline.stats()
+        assert stats["total_documents"] == 0

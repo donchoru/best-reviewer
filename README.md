@@ -2,18 +2,29 @@
 
 PDF, 웹 페이지, CSV 등 비정형 자산을 수집하여 벡터 임베딩으로 변환하고 검색하는 RAG 파이프라인.
 
-## 기능
+## 구조
 
-- PDF/웹/CSV 문서를 텍스트로 변환
-- 고정 크기 청킹 (500자, 50자 오버랩)
-- Gemini Text Embedding API로 벡터 임베딩 생성
-- SQLite에 문서/청크/임베딩 저장
-- 코사인 유사도 기반 검색
+```
+├── config.py           # RAGConfig — 설정 관리
+├── document_loader.py  # DocumentLoader — 문서 로딩 (PDF/웹/CSV)
+├── text_chunker.py     # TextChunker — 텍스트 청킹
+├── embedder.py         # Embedder — Gemini 임베딩 생성
+├── vector_store.py     # VectorStore — SQLite 벡터 저장소
+├── pipeline.py         # RAGPipeline — 오케스트레이터
+├── main.py             # 진입점
+└── test_rag_pipeline.py  # 단위 테스트 (19건)
+```
 
 ## 실행
 
 ```bash
-python rag_pipeline.py
+python main.py
+```
+
+## 테스트
+
+```bash
+python -m pytest test_rag_pipeline.py -v
 ```
 
 ## 기술 스택
