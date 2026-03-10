@@ -3,13 +3,17 @@ import json
 import hashlib
 import sqlite3
 from datetime import datetime
+from config import StoreConfig
 from processing.chunker import Chunk
+from .base_store import BaseStore
 
 
-class SqliteVectorStore:
+class SqliteVectorStore(BaseStore):
 
-    def __init__(self, db_path):
-        self._conn = sqlite3.connect(db_path)
+    def __init__(self, config):
+        if isinstance(config, str):
+            config = StoreConfig(db_path=config)
+        self._conn = sqlite3.connect(config.db_path)
         self._init_tables()
 
     def _init_tables(self):

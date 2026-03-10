@@ -14,8 +14,8 @@ class Chunk:
 class TextChunker:
 
     def __init__(self, config):
-        self._size = config.chunk_size
-        self._overlap = config.chunk_overlap
+        self._size = config.size
+        self._overlap = config.overlap
 
     def split(self, text, doc_id, source, doc_type):
         """텍스트를 고정 크기 청크로 분할한다."""
