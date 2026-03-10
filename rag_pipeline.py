@@ -139,10 +139,7 @@ class RAGSystem:
 
     def ingest(self, source_type, source):
         try:
-            try:
-                text = self.loader.load(source_type, source)
-            except ValueError as e:
-                return {"status": "error", "message": str(e)}
+            text = self.loader.load(source_type, source)
 
             if not text.strip():
                 return {"status": "error", "message": "빈 콘텐츠"}
@@ -156,6 +153,8 @@ class RAGSystem:
 
             logger.info(f"[{source_type.upper()}] {source} → {len(chunks)}개 청크")
             return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
             logger.error(f"[{source_type.upper()}] {source} 실패: {e}")
             return {"status": "error", "message": str(e)}
