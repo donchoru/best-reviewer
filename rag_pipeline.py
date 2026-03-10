@@ -1,7 +1,5 @@
 """RAG 파이프라인 — 비정형 자산 수집·임베딩·검색."""
 import os
-import re
-import csv
 import json
 import hashlib
 import sqlite3
