@@ -1,9 +1,10 @@
 """Gemini 임베딩 — Text Embedding API 래퍼."""
 import os
 import requests
+from .base_embedder import BaseEmbedder
 
 
-class GeminiEmbedder:
+class GeminiEmbedder(BaseEmbedder):
 
     def __init__(self, config):
         self._api_key = os.environ.get(config.api_key_env, "")

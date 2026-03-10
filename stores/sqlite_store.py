@@ -4,9 +4,10 @@ import hashlib
 import sqlite3
 from datetime import datetime
 from processing.chunker import Chunk
+from .base_store import BaseStore
 
 
-class SqliteVectorStore:
+class SqliteVectorStore(BaseStore):
 
     def __init__(self, db_path):
         self._conn = sqlite3.connect(db_path)
