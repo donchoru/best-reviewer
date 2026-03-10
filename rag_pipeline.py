@@ -1,13 +1,33 @@
-"""RAG 파이프라인 — 비정형 자산 수집·임베딩·검색."""
+"""RAG 파이프라인 — DI 기반 오케스트레이터."""
 import hashlib
 import logging
 from config import RAGConfig, StoreConfig
-from loaders import PdfLoader, WebLoader, CsvLoader
+from loaders import BaseLoader, PdfLoader, WebLoader, CsvLoader
 from processing import TextChunker, GeminiEmbedder
 from stores import SqliteVectorStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+class LoaderRegistry:
+    """로더 레지스트리 — 새 로더를 런타임에 등록/조회. (OCP)"""
+
+    def __init__(self):
+        self._loaders: dict[str, BaseLoader] = {}
+
+    def register(self, loader: BaseLoader) -> None:
+        self._loaders[loader.source_type] = loader
+
+    def get(self, source_type: str) -> BaseLoader:
+        loader = self._loaders.get(source_type)
+        if not loader:
+            raise ValueError(f"등록되지 않은 소스 타입: {source_type}")
+        return loader
+
+    @property
+    def supported_types(self) -> list[str]:
+        return list(self._loaders.keys())
 
 
 class RAGSystem:
@@ -17,7 +37,10 @@ class RAGSystem:
         self.config = config or RAGConfig()
         if db_path:
             self.config.store = StoreConfig(db_path=db_path)
-        self.loaders = {"pdf": PdfLoader(), "web": WebLoader(), "csv": CsvLoader()}
+        self._loaders = LoaderRegistry()
+        self._loaders.register(PdfLoader())
+        self._loaders.register(WebLoader())
+        self._loaders.register(CsvLoader())
         self.chunker = TextChunker(self.config)
         self.embedder = GeminiEmbedder(self.config)
         self.store = SqliteVectorStore(self.config.store)
@@ -25,13 +48,13 @@ class RAGSystem:
     # ── 하위 호환 위임 메서드 ──────────────────────────────
 
     def load_pdf(self, path):
-        return self.loaders["pdf"].load(path)
+        return self._loaders.get("pdf").load(path)
 
     def load_web(self, url):
-        return self.loaders["web"].load(url)
+        return self._loaders.get("web").load(url)
 
     def load_csv(self, path):
-        return self.loaders["csv"].load(path)
+        return self._loaders.get("csv").load(path)
 
     def chunk_text(self, text, doc_id, source, doc_type):
         return self.chunker.split(text, doc_id, source, doc_type)
@@ -49,10 +72,7 @@ class RAGSystem:
 
     def ingest(self, source_type, source):
         try:
-            loader = self.loaders.get(source_type)
-            if not loader:
-                return {"status": "error", "message": f"지원하지 않는 타입: {source_type}"}
-            text = loader.load(source)
+            text = self._loaders.get(source_type).load(source)
 
             if not text.strip():
                 return {"status": "error", "message": "빈 콘텐츠"}
