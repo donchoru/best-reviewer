@@ -10,6 +10,7 @@ import requests
 from datetime import datetime
 from config import RAGConfig
 from document_loader import DocumentLoader
+from processing import TextChunker
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class RAGSystem:
         if db_path:
             self.config.db_path = db_path
         self.loader = DocumentLoader()
+        self.chunker = TextChunker(self.config)
         self.api_key = os.environ.get(self.config.api_key_env, "")
         self.conn = sqlite3.connect(self.config.db_path)
         self._init_tables()
@@ -53,23 +55,10 @@ class RAGSystem:
     def load_csv(self, path):
         return self.loader.load("csv", path)
 
-    # ── 텍스트 청킹 ────────────────────────────────────────
+    # ── 텍스트 청킹 (TextChunker에 위임) ─────────────────
 
     def chunk_text(self, text, doc_id, source, doc_type):
-        chunks = []
-        start = 0
-        while start < len(text):
-            segment = text[start:start + self.config.chunk_size]
-            if segment.strip():
-                chunks.append({
-                    "content": segment,
-                    "position": len(chunks),
-                    "doc_id": doc_id,
-                    "source": source,
-                    "doc_type": doc_type,
-                })
-            start += self.config.chunk_size - self.config.chunk_overlap
-        return chunks
+        return self.chunker.split(text, doc_id, source, doc_type)
 
     # ── 임베딩 ─────────────────────────────────────────────
 
@@ -103,11 +92,11 @@ class RAGSystem:
 
     def save_chunks(self, chunks, embeddings):
         for chunk, embedding in zip(chunks, embeddings):
-            chunk_id = hashlib.md5(chunk["content"].encode()).hexdigest()
+            chunk_id = hashlib.md5(chunk.content.encode()).hexdigest()
             self.conn.execute(
                 "INSERT OR REPLACE INTO chunks VALUES (?, ?, ?, ?, ?)",
-                (chunk_id, chunk["doc_id"], chunk["content"],
-                 json.dumps(embedding), chunk["position"]),
+                (chunk_id, chunk.doc_id, chunk.content,
+                 json.dumps(embedding), chunk.position),
             )
         self.conn.commit()
 
@@ -146,7 +135,7 @@ class RAGSystem:
 
             doc_id = hashlib.md5(text.encode()).hexdigest()
             chunks = self.chunk_text(text, doc_id, source, source_type)
-            embeddings = self.get_embeddings_batch([c["content"] for c in chunks])
+            embeddings = self.get_embeddings_batch([c.content for c in chunks])
 
             self.save_document(doc_id, source, text, source_type, len(chunks))
             self.save_chunks(chunks, embeddings)
