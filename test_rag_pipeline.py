@@ -134,5 +134,76 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(CsvLoader().source_type, "csv")
 
 
+class TestTextChunker(unittest.TestCase):
+    """TextChunker 단위 테스트."""
+
+    def test_long_text_produces_multiple_chunks(self):
+        """25자를 10자 청크로 분할하면 3개 이상 생성되는지 확인."""
+        from config import RAGConfig
+        from processing import TextChunker
+        cfg = RAGConfig(chunk_size=10, chunk_overlap=2)
+        chunks = TextChunker(cfg).split("A" * 25, "d1", "t.txt", "pdf")
+        self.assertGreaterEqual(len(chunks), 3)
+
+    def test_empty_text_returns_no_chunks(self):
+        """빈 문자열 → 빈 리스트 확인."""
+        from config import RAGConfig
+        from processing import TextChunker
+        cfg = RAGConfig(chunk_size=10, chunk_overlap=2)
+        self.assertEqual(TextChunker(cfg).split("", "d1", "t.txt", "pdf"), [])
+
+    def test_adjacent_chunks_share_overlap_content(self):
+        """인접 청크 끝부분 = 다음 청크 시작부분 확인 (overlap)."""
+        from config import RAGConfig
+        from processing import TextChunker
+        cfg = RAGConfig(chunk_size=10, chunk_overlap=3)
+        chunks = TextChunker(cfg).split("0123456789ABCDEFGHIJ", "d1", "s.txt", "pdf")
+        if len(chunks) >= 2:
+            self.assertEqual(chunks[0].content[-3:], chunks[1].content[:3])
+
+
+class TestVectorStore(unittest.TestCase):
+    """SqliteVectorStore 단위 테스트."""
+
+    def test_cosine_similarity_identical_vectors(self):
+        """동일 벡터 → 유사도 1.0 확인."""
+        from stores import SqliteVectorStore
+        self.assertAlmostEqual(
+            SqliteVectorStore._cosine_similarity([1, 0, 0], [1, 0, 0]), 1.0, places=3)
+
+    def test_cosine_similarity_orthogonal_vectors(self):
+        """직교 벡터 → 유사도 0.0 확인."""
+        from stores import SqliteVectorStore
+        self.assertAlmostEqual(
+            SqliteVectorStore._cosine_similarity([1, 0], [0, 1]), 0.0, places=3)
+
+    def test_cosine_similarity_zero_vector_safe(self):
+        """영벡터 → ZeroDivision 없이 0.0 반환 확인."""
+        from stores import SqliteVectorStore
+        self.assertEqual(SqliteVectorStore._cosine_similarity([0, 0], [1, 1]), 0.0)
+
+    def test_save_document_reflected_in_stats(self):
+        """문서 저장 후 stats에 반영 확인."""
+        from stores import SqliteVectorStore
+        with tempfile.TemporaryDirectory() as d:
+            store = SqliteVectorStore(os.path.join(d, "t.db"))
+            store.save_document("d1", "src.txt", "content", "pdf", 2)
+            stats = store.get_stats()
+            self.assertEqual(stats["total_documents"], 1)
+            self.assertEqual(stats["by_type"]["pdf"], 1)
+
+    def test_save_chunks_and_search_returns_match(self):
+        """청크 저장 후 동일 벡터 검색 → score > 0.99 확인."""
+        from stores import SqliteVectorStore
+        from processing.chunker import Chunk
+        with tempfile.TemporaryDirectory() as d:
+            store = SqliteVectorStore(os.path.join(d, "t.db"))
+            store.save_chunks([Chunk("hello world", 0, "d1", "src.txt", "pdf")],
+                              [[1.0, 0.0, 0.0]])
+            results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
+            self.assertEqual(len(results), 1)
+            self.assertGreater(results[0]["score"], 0.99)
+
+
 if __name__ == "__main__":
     unittest.main()
