@@ -1,5 +1,5 @@
 """하위 호환 래퍼 — pipeline.py의 RAGPipeline을 사용하세요."""
-from config import RAGConfig, StoreConfig
+from config import RAGConfig, StoreConfig, ChunkConfig, EmbedConfig
 from loaders import PdfLoader, WebLoader, CsvLoader
 from processing import TextChunker, GeminiEmbedder
 from stores import SqliteVectorStore
@@ -12,7 +12,7 @@ class RAGSystem:
     def __init__(self, config=None, db_path=None):
         self.config = config or RAGConfig()
         if db_path:
-            self.config.store = StoreConfig(db_path=db_path)
+            self.config = RAGConfig(store=StoreConfig(db_path=db_path))
 
         registry = LoaderRegistry()
         registry.register(PdfLoader())
@@ -21,8 +21,8 @@ class RAGSystem:
 
         self._pipeline = RAGPipeline(
             loader_registry=registry,
-            chunker=TextChunker(self.config),
-            embedder=GeminiEmbedder(self.config),
+            chunker=TextChunker(self.config.chunk),
+            embedder=GeminiEmbedder(self.config.embed),
             store=SqliteVectorStore(self.config.store),
             config=self.config,
         )

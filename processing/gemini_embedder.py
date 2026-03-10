@@ -7,22 +7,19 @@ from .base_embedder import BaseEmbedder
 class GeminiEmbedder(BaseEmbedder):
 
     def __init__(self, config):
+        self._config = config
         self._api_key = os.environ.get(config.api_key_env, "")
-        self._url = (f"{config.embed_api_url}/{config.embed_model}"
-                     f":embedContent?key={self._api_key}")
-        self._model = config.embed_model
-        self._timeout = config.embed_timeout
-        self._dimension = config.embed_dimension
+        self._url = f"{config.api_url}/{config.model}:embedContent?key={self._api_key}"
 
     @property
     def dimension(self):
-        return self._dimension
+        return self._config.dimension
 
     def embed(self, text):
         resp = requests.post(self._url, json={
-            "model": self._model,
+            "model": self._config.model,
             "content": {"parts": [{"text": text}]},
-        }, timeout=self._timeout)
+        }, timeout=self._config.timeout)
         resp.raise_for_status()
         return resp.json()["embedding"]["values"]
 

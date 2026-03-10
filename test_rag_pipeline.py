@@ -139,24 +139,24 @@ class TestTextChunker(unittest.TestCase):
 
     def test_long_text_produces_multiple_chunks(self):
         """25자를 10자 청크로 분할하면 3개 이상 생성되는지 확인."""
-        from config import RAGConfig
+        from config import ChunkConfig
         from processing import TextChunker
-        cfg = RAGConfig(chunk_size=10, chunk_overlap=2)
+        cfg = ChunkConfig(size=10, overlap=2)
         chunks = TextChunker(cfg).split("A" * 25, "d1", "t.txt", "pdf")
         self.assertGreaterEqual(len(chunks), 3)
 
     def test_empty_text_returns_no_chunks(self):
         """빈 문자열 → 빈 리스트 확인."""
-        from config import RAGConfig
+        from config import ChunkConfig
         from processing import TextChunker
-        cfg = RAGConfig(chunk_size=10, chunk_overlap=2)
+        cfg = ChunkConfig(size=10, overlap=2)
         self.assertEqual(TextChunker(cfg).split("", "d1", "t.txt", "pdf"), [])
 
     def test_adjacent_chunks_share_overlap_content(self):
         """인접 청크 끝부분 = 다음 청크 시작부분 확인 (overlap)."""
-        from config import RAGConfig
+        from config import ChunkConfig
         from processing import TextChunker
-        cfg = RAGConfig(chunk_size=10, chunk_overlap=3)
+        cfg = ChunkConfig(size=10, overlap=3)
         chunks = TextChunker(cfg).split("0123456789ABCDEFGHIJ", "d1", "s.txt", "pdf")
         if len(chunks) >= 2:
             self.assertEqual(chunks[0].content[-3:], chunks[1].content[:3])

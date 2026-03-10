@@ -19,8 +19,8 @@ def create_pipeline(config: RAGConfig | None = None) -> RAGPipeline:
 
     return RAGPipeline(
         loader_registry=registry,
-        chunker=TextChunker(cfg),
-        embedder=GeminiEmbedder(cfg),
+        chunker=TextChunker(cfg.chunk),
+        embedder=GeminiEmbedder(cfg.embed),
         store=SqliteVectorStore(cfg.store),
         config=cfg,
     )
