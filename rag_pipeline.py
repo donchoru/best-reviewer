@@ -8,6 +8,7 @@ import sqlite3
 import logging
 import requests
 from datetime import datetime
+from config import RAGConfig
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -16,10 +17,12 @@ logger = logging.getLogger(__name__)
 class RAGSystem:
     """RAG 파이프라인: 문서 로딩 → 청킹 → 임베딩 → 저장 → 검색."""
 
-    def __init__(self, db_path="/tmp/rag_assets.db"):
-        self.db_path = db_path
-        self.api_key = os.environ.get("GEMINI_API_KEY", "")
-        self.conn = sqlite3.connect(db_path)
+    def __init__(self, config=None, db_path=None):
+        self.config = config or RAGConfig()
+        if db_path:
+            self.config.db_path = db_path
+        self.api_key = os.environ.get(self.config.api_key_env, "")
+        self.conn = sqlite3.connect(self.config.db_path)
         self._init_tables()
 
     def _init_tables(self):
@@ -49,7 +52,8 @@ class RAGSystem:
 
     def load_web(self, url):
         try:
-            resp = requests.get(url, timeout=30, headers={"User-Agent": "RAGBot/1.0"})
+            resp = requests.get(url, timeout=self.config.embed_timeout,
+                                headers={"User-Agent": "RAGBot/1.0"})
             resp.raise_for_status()
             html = resp.text
             for tag in ["script", "style", "nav", "footer", "header"]:
@@ -79,7 +83,7 @@ class RAGSystem:
         chunks = []
         start = 0
         while start < len(text):
-            segment = text[start:start + 500]
+            segment = text[start:start + self.config.chunk_size]
             if segment.strip():
                 chunks.append({
                     "content": segment,
@@ -88,17 +92,17 @@ class RAGSystem:
                     "source": source,
                     "doc_type": doc_type,
                 })
-            start += 500 - 50
+            start += self.config.chunk_size - self.config.chunk_overlap
         return chunks
 
     # ── 임베딩 ─────────────────────────────────────────────
 
     def get_embedding(self, text):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.api_key}"
+        url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={self.api_key}"
         resp = requests.post(url, json={
-            "model": "models/text-embedding-004",
+            "model": self.config.embed_model,
             "content": {"parts": [{"text": text}]},
-        }, timeout=30)
+        }, timeout=self.config.embed_timeout)
         resp.raise_for_status()
         return resp.json()["embedding"]["values"]
 
@@ -108,7 +112,7 @@ class RAGSystem:
             try:
                 results.append(self.get_embedding(text))
             except Exception:
-                results.append([0.0] * 768)
+                results.append([0.0] * self.config.embed_dimension)
         return results
 
     # ── 저장 ───────────────────────────────────────────────
@@ -139,7 +143,8 @@ class RAGSystem:
         norm_b = sum(x ** 2 for x in b) ** 0.5
         return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
 
-    def search(self, query, top_k=5):
+    def search(self, query, top_k=None):
+        k = top_k or self.config.default_top_k
         query_embedding = self.get_embedding(query)
         cursor = self.conn.execute(
             "SELECT id, doc_id, content, embedding FROM chunks")
@@ -152,7 +157,7 @@ class RAGSystem:
             results.append({"chunk_id": row[0], "doc_id": row[1],
                             "content": row[2], "score": score})
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        return results[:k]
 
     # ── 파이프라인 ─────────────────────────────────────────
 
