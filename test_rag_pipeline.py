@@ -41,7 +41,7 @@ class TestRAGSystem(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    @patch("document_loader.requests.get")
+    @patch("loaders.web_loader.requests.get")
     def test_load_web_strips_html(self, mock_get):
         """<script> 태그가 제거되고 순수 텍스트만 남는지 확인."""
         mock_resp = MagicMock()
@@ -90,49 +90,48 @@ class TestRAGSystem(unittest.TestCase):
             self.assertEqual(stats["total_documents"], 0)
 
 
-class TestDocumentLoader(unittest.TestCase):
-    """DocumentLoader 단위 테스트."""
+class TestLoaders(unittest.TestCase):
+    """개별 로더 단위 테스트."""
 
-    def test_load_pdf_reads_file_content(self):
-        """PDF 로더가 파일 내용을 정확히 반환하는지 확인."""
-        from document_loader import DocumentLoader
+    def test_pdf_loader_reads_file_content(self):
+        """PdfLoader가 파일 내용을 정확히 반환하는지 확인."""
+        from loaders import PdfLoader
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
             f.write("test content")
             path = f.name
         try:
-            loader = DocumentLoader()
-            self.assertEqual(loader.load("pdf", path), "test content")
+            self.assertEqual(PdfLoader().load(path), "test content")
         finally:
             os.unlink(path)
 
-    def test_load_csv_formats_as_key_value(self):
-        """CSV가 key: value 형식으로 변환되는지 확인."""
-        from document_loader import DocumentLoader
+    def test_csv_loader_formats_as_key_value(self):
+        """CsvLoader가 key: value 형식으로 변환하는지 확인."""
+        from loaders import CsvLoader
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
             f.write("col1,col2\nval1,val2\n")
             path = f.name
         try:
-            text = DocumentLoader().load("csv", path)
-            self.assertIn("col1: val1", text)
+            self.assertIn("col1: val1", CsvLoader().load(path))
         finally:
             os.unlink(path)
 
     def test_empty_csv_returns_empty_string(self):
         """완전히 빈 CSV 파일 → 빈 문자열 반환 확인."""
-        from document_loader import DocumentLoader
+        from loaders import CsvLoader
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
             f.write("")
             path = f.name
         try:
-            self.assertEqual(DocumentLoader().load("csv", path), "")
+            self.assertEqual(CsvLoader().load(path), "")
         finally:
             os.unlink(path)
 
-    def test_unsupported_type_raises_value_error(self):
-        """미지원 타입 → ValueError 발생 확인."""
-        from document_loader import DocumentLoader
-        with self.assertRaises(ValueError):
-            DocumentLoader().load("xml", "test.xml")
+    def test_each_loader_has_source_type(self):
+        """각 로더의 source_type 프로퍼티 확인."""
+        from loaders import PdfLoader, WebLoader, CsvLoader
+        self.assertEqual(PdfLoader().source_type, "pdf")
+        self.assertEqual(WebLoader().source_type, "web")
+        self.assertEqual(CsvLoader().source_type, "csv")
 
 
 if __name__ == "__main__":

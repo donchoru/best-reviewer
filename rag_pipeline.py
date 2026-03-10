@@ -2,7 +2,7 @@
 import hashlib
 import logging
 from config import RAGConfig
-from document_loader import DocumentLoader
+from loaders import PdfLoader, WebLoader, CsvLoader
 from processing import TextChunker, GeminiEmbedder
 from stores import SqliteVectorStore
 
@@ -17,23 +17,21 @@ class RAGSystem:
         self.config = config or RAGConfig()
         if db_path:
             self.config.db_path = db_path
-        self.loader = DocumentLoader()
+        self.loaders = {"pdf": PdfLoader(), "web": WebLoader(), "csv": CsvLoader()}
         self.chunker = TextChunker(self.config)
         self.embedder = GeminiEmbedder(self.config)
         self.store = SqliteVectorStore(self.config.db_path)
 
-    # ── 문서 로딩 (DocumentLoader에 위임) ─────────────────
+    # ── 하위 호환 위임 메서드 ──────────────────────────────
 
     def load_pdf(self, path):
-        return self.loader.load("pdf", path)
+        return self.loaders["pdf"].load(path)
 
     def load_web(self, url):
-        return self.loader.load("web", url)
+        return self.loaders["web"].load(url)
 
     def load_csv(self, path):
-        return self.loader.load("csv", path)
-
-    # ── 하위 호환 위임 메서드 ──────────────────────────────
+        return self.loaders["csv"].load(path)
 
     def chunk_text(self, text, doc_id, source, doc_type):
         return self.chunker.split(text, doc_id, source, doc_type)
@@ -51,7 +49,10 @@ class RAGSystem:
 
     def ingest(self, source_type, source):
         try:
-            text = self.loader.load(source_type, source)
+            loader = self.loaders.get(source_type)
+            if not loader:
+                return {"status": "error", "message": f"지원하지 않는 타입: {source_type}"}
+            text = loader.load(source)
 
             if not text.strip():
                 return {"status": "error", "message": "빈 콘텐츠"}
