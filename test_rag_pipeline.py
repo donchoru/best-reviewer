@@ -117,6 +117,17 @@ class TestDocumentLoader(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_empty_csv_returns_empty_string(self):
+        """완전히 빈 CSV 파일 → 빈 문자열 반환 확인."""
+        from document_loader import DocumentLoader
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
+            f.write("")
+            path = f.name
+        try:
+            self.assertEqual(DocumentLoader().load("csv", path), "")
+        finally:
+            os.unlink(path)
+
     def test_unsupported_type_raises_value_error(self):
         """미지원 타입 → ValueError 발생 확인."""
         from document_loader import DocumentLoader

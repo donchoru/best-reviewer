@@ -40,6 +40,10 @@ class DocumentLoader:
     def _load_csv(self, path):
         rows = []
         with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+            if not content.strip():
+                return ""
+            f.seek(0)
             reader = csv.DictReader(f)
             for row in reader:
                 rows.append(" | ".join(f"{k}: {v}" for k, v in row.items()))
