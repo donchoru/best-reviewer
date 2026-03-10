@@ -41,7 +41,7 @@ class TestRAGSystem(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    @patch("rag_pipeline.requests.get")
+    @patch("document_loader.requests.get")
     def test_load_web_strips_html(self, mock_get):
         """<script> 태그가 제거되고 순수 텍스트만 남는지 확인."""
         mock_resp = MagicMock()
