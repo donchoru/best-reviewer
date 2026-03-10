@@ -4,11 +4,10 @@ import json
 import hashlib
 import sqlite3
 import logging
-import requests
 from datetime import datetime
 from config import RAGConfig
 from document_loader import DocumentLoader
-from processing import TextChunker
+from processing import TextChunker, GeminiEmbedder
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -23,7 +22,7 @@ class RAGSystem:
             self.config.db_path = db_path
         self.loader = DocumentLoader()
         self.chunker = TextChunker(self.config)
-        self.api_key = os.environ.get(self.config.api_key_env, "")
+        self.embedder = GeminiEmbedder(self.config)
         self.conn = sqlite3.connect(self.config.db_path)
         self._init_tables()
 
@@ -58,25 +57,13 @@ class RAGSystem:
     def chunk_text(self, text, doc_id, source, doc_type):
         return self.chunker.split(text, doc_id, source, doc_type)
 
-    # ── 임베딩 ─────────────────────────────────────────────
+    # ── 임베딩 (GeminiEmbedder에 위임) ───────────────────
 
     def get_embedding(self, text):
-        url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={self.api_key}"
-        resp = requests.post(url, json={
-            "model": self.config.embed_model,
-            "content": {"parts": [{"text": text}]},
-        }, timeout=self.config.embed_timeout)
-        resp.raise_for_status()
-        return resp.json()["embedding"]["values"]
+        return self.embedder.embed(text)
 
     def get_embeddings_batch(self, texts):
-        results = []
-        for text in texts:
-            try:
-                results.append(self.get_embedding(text))
-            except Exception:
-                results.append([0.0] * self.config.embed_dimension)
-        return results
+        return self.embedder.embed_batch(texts)
 
     # ── 저장 ───────────────────────────────────────────────
 
