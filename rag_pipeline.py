@@ -8,18 +8,23 @@ import sqlite3
 import logging
 import requests
 from datetime import datetime
+from config import RAGConfig
+from document_loader import DocumentLoader
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 
 class RAGSystem:
-    """RAG 파이프라인: 문서 로딩 → 청킹 → 임베딩 → 저장 → 검색."""
+    """RAG 파이프라인: 청킹 → 임베딩 → 저장 → 검색."""
 
-    def __init__(self, db_path="/tmp/rag_assets.db"):
-        self.db_path = db_path
-        self.api_key = os.environ.get("GEMINI_API_KEY", "")
-        self.conn = sqlite3.connect(db_path)
+    def __init__(self, config=None, db_path=None):
+        self.config = config or RAGConfig()
+        if db_path:
+            self.config.db_path = db_path
+        self.loader = DocumentLoader()
+        self.api_key = os.environ.get(self.config.api_key_env, "")
+        self.conn = sqlite3.connect(self.config.db_path)
         self._init_tables()
 
     def _init_tables(self):
@@ -37,41 +42,16 @@ class RAGSystem:
         """)
         self.conn.commit()
 
-    # ── 문서 로딩 ──────────────────────────────────────────
+    # ── 문서 로딩 (DocumentLoader에 위임) ─────────────────
 
     def load_pdf(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"PDF 로딩 실패: {e}")
-            raise
+        return self.loader.load("pdf", path)
 
     def load_web(self, url):
-        try:
-            resp = requests.get(url, timeout=30, headers={"User-Agent": "RAGBot/1.0"})
-            resp.raise_for_status()
-            html = resp.text
-            for tag in ["script", "style", "nav", "footer", "header"]:
-                html = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", html,
-                              flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r"<[^>]+>", " ", html)
-            return re.sub(r"\s+", " ", text).strip()
-        except Exception as e:
-            logger.error(f"웹 로딩 실패: {e}")
-            raise
+        return self.loader.load("web", url)
 
     def load_csv(self, path):
-        try:
-            rows = []
-            with open(path, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    rows.append(" | ".join(f"{k}: {v}" for k, v in row.items()))
-            return "\n".join(rows)
-        except Exception as e:
-            logger.error(f"CSV 로딩 실패: {e}")
-            raise
+        return self.loader.load("csv", path)
 
     # ── 텍스트 청킹 ────────────────────────────────────────
 
@@ -79,7 +59,7 @@ class RAGSystem:
         chunks = []
         start = 0
         while start < len(text):
-            segment = text[start:start + 500]
+            segment = text[start:start + self.config.chunk_size]
             if segment.strip():
                 chunks.append({
                     "content": segment,
@@ -88,17 +68,17 @@ class RAGSystem:
                     "source": source,
                     "doc_type": doc_type,
                 })
-            start += 500 - 50
+            start += self.config.chunk_size - self.config.chunk_overlap
         return chunks
 
     # ── 임베딩 ─────────────────────────────────────────────
 
     def get_embedding(self, text):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.api_key}"
+        url = f"{self.config.embed_api_url}/{self.config.embed_model}:embedContent?key={self.api_key}"
         resp = requests.post(url, json={
-            "model": "models/text-embedding-004",
+            "model": self.config.embed_model,
             "content": {"parts": [{"text": text}]},
-        }, timeout=30)
+        }, timeout=self.config.embed_timeout)
         resp.raise_for_status()
         return resp.json()["embedding"]["values"]
 
@@ -108,7 +88,7 @@ class RAGSystem:
             try:
                 results.append(self.get_embedding(text))
             except Exception:
-                results.append([0.0] * 768)
+                results.append([0.0] * self.config.embed_dimension)
         return results
 
     # ── 저장 ───────────────────────────────────────────────
@@ -139,7 +119,8 @@ class RAGSystem:
         norm_b = sum(x ** 2 for x in b) ** 0.5
         return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
 
-    def search(self, query, top_k=5):
+    def search(self, query, top_k=None):
+        k = top_k or self.config.default_top_k
         query_embedding = self.get_embedding(query)
         cursor = self.conn.execute(
             "SELECT id, doc_id, content, embedding FROM chunks")
@@ -152,20 +133,13 @@ class RAGSystem:
             results.append({"chunk_id": row[0], "doc_id": row[1],
                             "content": row[2], "score": score})
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        return results[:k]
 
     # ── 파이프라인 ─────────────────────────────────────────
 
     def ingest(self, source_type, source):
         try:
-            if source_type == "pdf":
-                text = self.load_pdf(source)
-            elif source_type == "web":
-                text = self.load_web(source)
-            elif source_type == "csv":
-                text = self.load_csv(source)
-            else:
-                return {"status": "error", "message": f"지원하지 않는 타입: {source_type}"}
+            text = self.loader.load(source_type, source)
 
             if not text.strip():
                 return {"status": "error", "message": "빈 콘텐츠"}
@@ -179,6 +153,8 @@ class RAGSystem:
 
             logger.info(f"[{source_type.upper()}] {source} → {len(chunks)}개 청크")
             return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
         except Exception as e:
             logger.error(f"[{source_type.upper()}] {source} 실패: {e}")
             return {"status": "error", "message": str(e)}
