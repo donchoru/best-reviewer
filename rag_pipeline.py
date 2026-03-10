@@ -1,7 +1,7 @@
 """RAG 파이프라인 — 비정형 자산 수집·임베딩·검색."""
 import hashlib
 import logging
-from config import RAGConfig
+from config import RAGConfig, StoreConfig
 from loaders import PdfLoader, WebLoader, CsvLoader
 from processing import TextChunker, GeminiEmbedder
 from stores import SqliteVectorStore
@@ -16,11 +16,11 @@ class RAGSystem:
     def __init__(self, config=None, db_path=None):
         self.config = config or RAGConfig()
         if db_path:
-            self.config.db_path = db_path
+            self.config.store = StoreConfig(db_path=db_path)
         self.loaders = {"pdf": PdfLoader(), "web": WebLoader(), "csv": CsvLoader()}
         self.chunker = TextChunker(self.config)
         self.embedder = GeminiEmbedder(self.config)
-        self.store = SqliteVectorStore(self.config.db_path)
+        self.store = SqliteVectorStore(self.config.store)
 
     # ── 하위 호환 위임 메서드 ──────────────────────────────
 
