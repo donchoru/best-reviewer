@@ -13,6 +13,7 @@ from loaders import BaseLoader, PdfLoader, WebLoader, CsvLoader
 from processing import TextChunker, BaseEmbedder
 from processing.chunker import Chunk
 from stores import BaseStore, SqliteVectorStore
+from stores.similarity import BaseSimilarity, CosineSimilarity, EuclideanSimilarity, get_similarity
 from pipeline import LoaderRegistry, RAGPipeline
 
 
@@ -166,6 +167,49 @@ class TestTextChunker(unittest.TestCase):
         self.assertEqual(chunks[0].position, 0)
 
 
+class TestSimilarity(unittest.TestCase):
+    """유사도 Strategy — 인터페이스 준수 및 계산 정확도 검증."""
+    def test_cosine_implements_base(self):
+        """CosineSimilarity가 BaseSimilarity ABC를 구현하는지 확인. (LSP)"""
+        self.assertIsInstance(CosineSimilarity(), BaseSimilarity)
+    def test_cosine_identical_vectors(self):
+        """코사인: 동일 벡터 → 1.0 확인."""
+        self.assertAlmostEqual(CosineSimilarity().calculate([1, 0, 0], [1, 0, 0]), 1.0, places=3)
+    def test_cosine_orthogonal_vectors(self):
+        """코사인: 직교 벡터 → 0.0 확인."""
+        self.assertAlmostEqual(CosineSimilarity().calculate([1, 0], [0, 1]), 0.0, places=3)
+    def test_cosine_zero_vector_safe(self):
+        """코사인: 영벡터 → ZeroDivision 없이 0.0 반환 확인."""
+        self.assertEqual(CosineSimilarity().calculate([0, 0], [1, 1]), 0.0)
+    def test_euclidean_identical_vectors(self):
+        """유클리드: 동일 벡터 → 1.0 확인."""
+        self.assertAlmostEqual(EuclideanSimilarity().calculate([1, 0, 0], [1, 0, 0]), 1.0, places=3)
+    def test_euclidean_different_vectors(self):
+        """유클리드: 다른 벡터 → 0 < score < 1 확인."""
+        score = EuclideanSimilarity().calculate([1, 0], [0, 1])
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, 1.0)
+    def test_get_similarity_returns_correct_instance(self):
+        """get_similarity로 이름 기반 조회 확인."""
+        self.assertIsInstance(get_similarity("cosine"), CosineSimilarity)
+        self.assertIsInstance(get_similarity("euclidean"), EuclideanSimilarity)
+    def test_get_similarity_invalid_raises_error(self):
+        """지원하지 않는 유사도 타입 → ValueError 확인."""
+        with self.assertRaises(ValueError):
+            get_similarity("manhattan")
+    def test_custom_similarity_extends_without_code_change(self):
+        """새 유사도 전략 추가 시 기존 코드 수정 불필요 확인. (OCP)"""
+        class ManhattanSimilarity(BaseSimilarity):
+            @property
+            def name(self) -> str: return "manhattan"
+            def calculate(self, a, b):
+                dist = sum(abs(x - y) for x, y in zip(a, b))
+                return 1.0 / (1.0 + dist)
+        sim = ManhattanSimilarity()
+        self.assertAlmostEqual(sim.calculate([1, 0], [1, 0]), 1.0, places=3)
+        self.assertIsInstance(sim, BaseSimilarity)
+
+
 class TestVectorStore(unittest.TestCase):
     """SqliteVectorStore — Repository 패턴 및 유사도 검색 검증."""
     def test_implements_base_store_interface(self):
@@ -174,15 +218,6 @@ class TestVectorStore(unittest.TestCase):
             store = SqliteVectorStore(StoreConfig(db_path=os.path.join(d, "t.db")))
             self.assertIsInstance(store, BaseStore)
             store.close()
-    def test_cosine_similarity_identical_vectors(self):
-        """동일 벡터 → 유사도 1.0 확인."""
-        self.assertAlmostEqual(SqliteVectorStore._cosine_similarity([1, 0, 0], [1, 0, 0]), 1.0, places=3)
-    def test_cosine_similarity_orthogonal_vectors(self):
-        """직교 벡터 → 유사도 0.0 확인."""
-        self.assertAlmostEqual(SqliteVectorStore._cosine_similarity([1, 0], [0, 1]), 0.0, places=3)
-    def test_cosine_similarity_zero_vector_safe(self):
-        """영벡터 → ZeroDivision 없이 0.0 반환 확인."""
-        self.assertEqual(SqliteVectorStore._cosine_similarity([0, 0], [1, 1]), 0.0)
     def test_save_document_reflected_in_stats(self):
         """문서 저장 후 stats에 반영 확인."""
         with tempfile.TemporaryDirectory() as d:
@@ -200,6 +235,26 @@ class TestVectorStore(unittest.TestCase):
             results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
             self.assertEqual(len(results), 1)
             self.assertGreater(results[0]["score"], 0.99)
+            store.close()
+    def test_store_with_euclidean_di(self):
+        """DI로 EuclideanSimilarity 주입 후 검색 동작 확인."""
+        with tempfile.TemporaryDirectory() as d:
+            store = SqliteVectorStore(
+                StoreConfig(db_path=os.path.join(d, "t.db")),
+                similarity=EuclideanSimilarity())
+            store.save_chunks([Chunk("hello", 0, "d1", "src.txt", "pdf")], [[1.0, 0.0, 0.0]])
+            results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
+            self.assertEqual(len(results), 1)
+            self.assertAlmostEqual(results[0]["score"], 1.0, places=3)
+            store.close()
+    def test_store_config_string_fallback(self):
+        """StoreConfig.similarity 문자열 설정으로도 동작 확인."""
+        with tempfile.TemporaryDirectory() as d:
+            store = SqliteVectorStore(StoreConfig(db_path=os.path.join(d, "t.db"), similarity="euclidean"))
+            store.save_chunks([Chunk("hello", 0, "d1", "src.txt", "pdf")], [[1.0, 0.0, 0.0]])
+            results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
+            self.assertEqual(len(results), 1)
+            self.assertAlmostEqual(results[0]["score"], 1.0, places=3)
             store.close()
 
 

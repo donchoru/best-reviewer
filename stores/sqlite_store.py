@@ -6,14 +6,17 @@ from datetime import datetime
 from config import StoreConfig
 from processing.chunker import Chunk
 from .base_store import BaseStore
+from .similarity import BaseSimilarity, get_similarity
 
 
 class SqliteVectorStore(BaseStore):
 
-    def __init__(self, config):
+    def __init__(self, config, similarity: BaseSimilarity | None = None):
         if isinstance(config, str):
             config = StoreConfig(db_path=config)
         self._conn = sqlite3.connect(config.db_path)
+        self._similarity = similarity or get_similarity(
+            getattr(config, "similarity", "cosine"))
         self._init_tables()
 
     def close(self):
@@ -61,7 +64,7 @@ class SqliteVectorStore(BaseStore):
             chunk_emb = json.loads(row[3])
             if not chunk_emb or all(v == 0.0 for v in chunk_emb):
                 continue
-            score = self._cosine_similarity(query_embedding, chunk_emb)
+            score = self._similarity.calculate(query_embedding, chunk_emb)
             results.append({"chunk_id": row[0], "doc_id": row[1],
                             "content": row[2], "score": score})
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -78,11 +81,3 @@ class SqliteVectorStore(BaseStore):
             type_counts[row[0]] = row[1]
         return {"total_documents": doc_count, "total_chunks": chunk_count,
                 "by_type": type_counts}
-
-    @staticmethod
-    def _cosine_similarity(a, b):
-        """코사인 유사도 — calc_similarity에서 이름 변경."""
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x ** 2 for x in a) ** 0.5
-        norm_b = sum(x ** 2 for x in b) ** 0.5
-        return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
