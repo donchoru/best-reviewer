@@ -1,5 +1,6 @@
 """텍스트 청킹 — 문서를 검색 가능한 단위로 분할."""
 from dataclasses import dataclass
+from .base_chunker import BaseChunker
 
 
 @dataclass(frozen=True)
@@ -11,7 +12,7 @@ class Chunk:
     doc_type: str
 
 
-class TextChunker:
+class TextChunker(BaseChunker):
 
     def __init__(self, config):
         self._size = config.size

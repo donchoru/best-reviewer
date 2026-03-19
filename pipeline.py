@@ -3,7 +3,7 @@ import hashlib
 import logging
 from config import RAGConfig
 from loaders import BaseLoader
-from processing import TextChunker, BaseEmbedder
+from processing import BaseChunker, BaseEmbedder
 from stores import BaseStore
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class LoaderRegistry:
 class RAGPipeline:
     """모든 의존성을 인터페이스(추상 클래스)로 받는다. (DIP)"""
 
-    def __init__(self, loader_registry: LoaderRegistry, chunker: TextChunker,
+    def __init__(self, loader_registry: LoaderRegistry, chunker: BaseChunker,
                  embedder: BaseEmbedder, store: BaseStore, config: RAGConfig):
         self._loaders = loader_registry
         self._chunker = chunker

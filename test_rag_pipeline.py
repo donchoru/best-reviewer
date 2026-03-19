@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError
 from unittest.mock import MagicMock, patch
 from config import RAGConfig, ChunkConfig, EmbedConfig, StoreConfig
 from loaders import BaseLoader, PdfLoader, WebLoader, CsvLoader
-from processing import TextChunker, BaseEmbedder
+from processing import BaseChunker, TextChunker, BaseEmbedder
 from processing.chunker import Chunk
 from stores import BaseStore, SqliteVectorStore
 from pipeline import LoaderRegistry, RAGPipeline
@@ -19,18 +19,18 @@ from pipeline import LoaderRegistry, RAGPipeline
 class TestConfig(unittest.TestCase):
     """Nested Config — 설정값 관리 및 불변성(frozen) 검증."""
     def test_nested_defaults_match_original(self):
-        """기본값이 원본 매직 넘버(500, 50, 768)와 일치하는지 확인."""
+        """기본값이 원본 매직 넘버(1000, 100, 768)와 일치하는지 확인."""
         cfg = RAGConfig()
-        self.assertEqual(cfg.chunk.size, 500)
-        self.assertEqual(cfg.chunk.overlap, 50)
+        self.assertEqual(cfg.chunk.size, 1000)
+        self.assertEqual(cfg.chunk.overlap, 100)
         self.assertEqual(cfg.embed.dimension, 768)
         self.assertEqual(cfg.store.db_path, "/tmp/rag_assets.db")
         self.assertEqual(cfg.default_top_k, 5)
     def test_custom_chunk_overrides_defaults(self):
         """ChunkConfig를 커스텀하면 RAGConfig에 정확히 반영되는지 확인."""
-        cfg = RAGConfig(chunk=ChunkConfig(size=1000, overlap=100))
-        self.assertEqual(cfg.chunk.size, 1000)
-        self.assertEqual(cfg.chunk.overlap, 100)
+        cfg = RAGConfig(chunk=ChunkConfig(size=2000, overlap=200))
+        self.assertEqual(cfg.chunk.size, 2000)
+        self.assertEqual(cfg.chunk.overlap, 200)
     def test_frozen_config_prevents_mutation(self):
         """frozen=True 설정으로 런타임 값 변경이 차단되는지 확인."""
         with self.assertRaises(FrozenInstanceError):
@@ -141,6 +141,19 @@ class TestLoaderRegistry(unittest.TestCase):
 
 class TestTextChunker(unittest.TestCase):
     """TextChunker — 텍스트 분할 및 Chunk 불변성 검증."""
+    def test_implements_base_chunker_interface(self):
+        """TextChunker가 BaseChunker ABC를 구현하는지 확인. (LSP)"""
+        self.assertIsInstance(TextChunker(ChunkConfig()), BaseChunker)
+    def test_custom_chunker_extends_without_code_change(self):
+        """새 청커 추가 시 기존 코드 수정 불필요 확인. (OCP)"""
+        class SentenceChunker(BaseChunker):
+            def split(self, text, doc_id, source, doc_type):
+                return [Chunk(s.strip(), i, doc_id, source, doc_type)
+                        for i, s in enumerate(text.split(".")) if s.strip()]
+        chunker = SentenceChunker()
+        chunks = chunker.split("hello. world.", "d1", "s.txt", "pdf")
+        self.assertEqual(len(chunks), 2)
+        self.assertIsInstance(chunker, BaseChunker)
     def test_long_text_produces_multiple_chunks(self):
         """25자를 10자 청크로 분할하면 3개 이상 생성되는지 확인."""
         chunks = TextChunker(ChunkConfig(size=10, overlap=2)).split("A" * 25, "d1", "t.txt", "pdf")
