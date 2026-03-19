@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ChunkConfig:
-    size: int = 500
-    overlap: int = 50
+    size: int = 1000
+    overlap: int = 100
 
 
 @dataclass(frozen=True)

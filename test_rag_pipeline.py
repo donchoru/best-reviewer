@@ -19,18 +19,18 @@ from pipeline import LoaderRegistry, RAGPipeline
 class TestConfig(unittest.TestCase):
     """Nested Config — 설정값 관리 및 불변성(frozen) 검증."""
     def test_nested_defaults_match_original(self):
-        """기본값이 원본 매직 넘버(500, 50, 768)와 일치하는지 확인."""
+        """기본값이 원본 매직 넘버(1000, 100, 768)와 일치하는지 확인."""
         cfg = RAGConfig()
-        self.assertEqual(cfg.chunk.size, 500)
-        self.assertEqual(cfg.chunk.overlap, 50)
+        self.assertEqual(cfg.chunk.size, 1000)
+        self.assertEqual(cfg.chunk.overlap, 100)
         self.assertEqual(cfg.embed.dimension, 768)
         self.assertEqual(cfg.store.db_path, "/tmp/rag_assets.db")
         self.assertEqual(cfg.default_top_k, 5)
     def test_custom_chunk_overrides_defaults(self):
         """ChunkConfig를 커스텀하면 RAGConfig에 정확히 반영되는지 확인."""
-        cfg = RAGConfig(chunk=ChunkConfig(size=1000, overlap=100))
-        self.assertEqual(cfg.chunk.size, 1000)
-        self.assertEqual(cfg.chunk.overlap, 100)
+        cfg = RAGConfig(chunk=ChunkConfig(size=2000, overlap=200))
+        self.assertEqual(cfg.chunk.size, 2000)
+        self.assertEqual(cfg.chunk.overlap, 200)
     def test_frozen_config_prevents_mutation(self):
         """frozen=True 설정으로 런타임 값 변경이 차단되는지 확인."""
         with self.assertRaises(FrozenInstanceError):
