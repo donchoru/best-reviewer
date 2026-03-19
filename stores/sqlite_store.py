@@ -16,6 +16,10 @@ class SqliteVectorStore(BaseStore):
         self._conn = sqlite3.connect(config.db_path)
         self._init_tables()
 
+    def close(self):
+        """연결 종료."""
+        self._conn.close()
+
     def _init_tables(self):
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS documents (
