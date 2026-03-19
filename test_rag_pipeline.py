@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError
 from unittest.mock import MagicMock, patch
 from config import RAGConfig, ChunkConfig, EmbedConfig, StoreConfig
 from loaders import BaseLoader, PdfLoader, WebLoader, CsvLoader
-from processing import TextChunker, BaseEmbedder
+from processing import BaseChunker, TextChunker, BaseEmbedder
 from processing.chunker import Chunk
 from stores import BaseStore, SqliteVectorStore
 from pipeline import LoaderRegistry, RAGPipeline
@@ -141,6 +141,19 @@ class TestLoaderRegistry(unittest.TestCase):
 
 class TestTextChunker(unittest.TestCase):
     """TextChunker — 텍스트 분할 및 Chunk 불변성 검증."""
+    def test_implements_base_chunker_interface(self):
+        """TextChunker가 BaseChunker ABC를 구현하는지 확인. (LSP)"""
+        self.assertIsInstance(TextChunker(ChunkConfig()), BaseChunker)
+    def test_custom_chunker_extends_without_code_change(self):
+        """새 청커 추가 시 기존 코드 수정 불필요 확인. (OCP)"""
+        class SentenceChunker(BaseChunker):
+            def split(self, text, doc_id, source, doc_type):
+                return [Chunk(s.strip(), i, doc_id, source, doc_type)
+                        for i, s in enumerate(text.split(".")) if s.strip()]
+        chunker = SentenceChunker()
+        chunks = chunker.split("hello. world.", "d1", "s.txt", "pdf")
+        self.assertEqual(len(chunks), 2)
+        self.assertIsInstance(chunker, BaseChunker)
     def test_long_text_produces_multiple_chunks(self):
         """25자를 10자 청크로 분할하면 3개 이상 생성되는지 확인."""
         chunks = TextChunker(ChunkConfig(size=10, overlap=2)).split("A" * 25, "d1", "t.txt", "pdf")
