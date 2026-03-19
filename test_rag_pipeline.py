@@ -98,6 +98,17 @@ class TestWebLoader(unittest.TestCase):
         text = WebLoader().load("https://example.com")
         self.assertIn("clean text", text)
         self.assertNotIn("evil", text)
+    @patch("loaders.web_loader.requests.get")
+    def test_custom_strip_tags_extends_without_code_change(self, mock_get):
+        """strip_tags 커스텀으로 제거 태그 확장 가능 확인. (OCP)"""
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><aside>ads</aside><p>main</p></html>"
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+        loader = WebLoader(strip_tags=("aside",))
+        text = loader.load("https://example.com")
+        self.assertIn("main", text)
+        self.assertNotIn("ads", text)
 
 
 class TestLoaderRegistry(unittest.TestCase):
@@ -160,7 +171,9 @@ class TestVectorStore(unittest.TestCase):
     def test_implements_base_store_interface(self):
         """SqliteVectorStore가 BaseStore ABC를 구현하는지 확인. (LSP)"""
         with tempfile.TemporaryDirectory() as d:
-            self.assertIsInstance(SqliteVectorStore(StoreConfig(db_path=os.path.join(d, "t.db"))), BaseStore)
+            store = SqliteVectorStore(StoreConfig(db_path=os.path.join(d, "t.db")))
+            self.assertIsInstance(store, BaseStore)
+            store.close()
     def test_cosine_similarity_identical_vectors(self):
         """동일 벡터 → 유사도 1.0 확인."""
         self.assertAlmostEqual(SqliteVectorStore._cosine_similarity([1, 0, 0], [1, 0, 0]), 1.0, places=3)
@@ -178,6 +191,7 @@ class TestVectorStore(unittest.TestCase):
             stats = store.get_stats()
             self.assertEqual(stats["total_documents"], 1)
             self.assertEqual(stats["by_type"]["pdf"], 1)
+            store.close()
     def test_save_chunks_and_search_returns_match(self):
         """청크 저장 후 동일 벡터 검색 → score > 0.99 확인."""
         with tempfile.TemporaryDirectory() as d:
@@ -186,6 +200,7 @@ class TestVectorStore(unittest.TestCase):
             results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
             self.assertEqual(len(results), 1)
             self.assertGreater(results[0]["score"], 0.99)
+            store.close()
 
 
 class TestPipeline(unittest.TestCase):
@@ -198,9 +213,10 @@ class TestPipeline(unittest.TestCase):
         registry = LoaderRegistry()
         registry.register(PdfLoader())
         registry.register(CsvLoader())
+        store = SqliteVectorStore(cfg.store)
         pipeline = RAGPipeline(loader_registry=registry, chunker=TextChunker(cfg.chunk),
-                               embedder=mock_embedder, store=SqliteVectorStore(cfg.store), config=cfg)
-        return pipeline, mock_embedder
+                               embedder=mock_embedder, store=store, config=cfg)
+        return pipeline, mock_embedder, store
     def test_ingest_returns_ok_and_calls_embedder(self):
         """유효 문서 수집 → status='ok' + embed_batch 호출 확인."""
         with tempfile.TemporaryDirectory() as d:
@@ -208,10 +224,11 @@ class TestPipeline(unittest.TestCase):
                 f.write("Sample document content for testing.")
                 path = f.name
             try:
-                pipeline, mock_emb = self._build_pipeline(d)
+                pipeline, mock_emb, store = self._build_pipeline(d)
                 result = pipeline.ingest("pdf", path)
                 self.assertEqual(result["status"], "ok")
                 mock_emb.embed_batch.assert_called_once()
+                store.close()
             finally:
                 os.unlink(path)
     def test_ingest_empty_returns_error_message(self):
@@ -221,10 +238,11 @@ class TestPipeline(unittest.TestCase):
                 f.write("   ")
                 path = f.name
             try:
-                pipeline, _ = self._build_pipeline(d)
+                pipeline, _, store = self._build_pipeline(d)
                 result = pipeline.ingest("pdf", path)
                 self.assertEqual(result["status"], "error")
                 self.assertIn("빈 콘텐츠", result["message"])
+                store.close()
             finally:
                 os.unlink(path)
     def test_ingest_batch_counts_success_and_failure(self):
@@ -234,24 +252,27 @@ class TestPipeline(unittest.TestCase):
                 f.write("batch content")
                 path = f.name
             try:
-                pipeline, _ = self._build_pipeline(d)
+                pipeline, _, store = self._build_pipeline(d)
                 results = pipeline.ingest_batch([{"type": "pdf", "path": path}, {"type": "xml", "path": "nope.xml"}])
                 self.assertEqual(results["success"], 1)
                 self.assertEqual(results["fail"], 1)
+                store.close()
             finally:
                 os.unlink(path)
     def test_stats_empty_db_returns_zeros(self):
         """빈 DB → 문서/청크 수 0 확인."""
         with tempfile.TemporaryDirectory() as d:
-            pipeline, _ = self._build_pipeline(d)
+            pipeline, _, store = self._build_pipeline(d)
             stats = pipeline.stats()
             self.assertEqual(stats["total_documents"], 0)
+            store.close()
     def test_search_delegates_to_embedder(self):
         """search() → embedder.embed() 위임 확인. (DI 검증)"""
         with tempfile.TemporaryDirectory() as d:
-            pipeline, mock_emb = self._build_pipeline(d)
+            pipeline, mock_emb, store = self._build_pipeline(d)
             pipeline.search("test query", top_k=3)
             mock_emb.embed.assert_called_once_with("test query")
+            store.close()
 
 
 if __name__ == "__main__":

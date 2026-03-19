@@ -28,14 +28,9 @@ class RAGSystem:
         )
         self._registry = registry
 
-    def load_pdf(self, path):
-        return self._registry.get("pdf").load(path)
-
-    def load_web(self, url):
-        return self._registry.get("web").load(url)
-
-    def load_csv(self, path):
-        return self._registry.get("csv").load(path)
+    def load(self, source_type, source):
+        """범용 로더 — source_type으로 레지스트리에서 로더를 조회하여 실행. (OCP)"""
+        return self._registry.get(source_type).load(source)
 
     def chunk_text(self, text, doc_id, source, doc_type):
         return self._pipeline._chunker.split(text, doc_id, source, doc_type)
