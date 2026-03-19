@@ -201,6 +201,27 @@ class TestVectorStore(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertGreater(results[0]["score"], 0.99)
             store.close()
+    def test_euclidean_similarity_identical_vectors(self):
+        """유클리드: 동일 벡터 → 1.0 확인."""
+        self.assertAlmostEqual(SqliteVectorStore._euclidean_similarity([1, 0, 0], [1, 0, 0]), 1.0, places=3)
+    def test_euclidean_similarity_different_vectors(self):
+        """유클리드: 다른 벡터 → 0 < score < 1 확인."""
+        score = SqliteVectorStore._euclidean_similarity([1, 0], [0, 1])
+        self.assertGreater(score, 0.0)
+        self.assertLess(score, 1.0)
+    def test_store_with_euclidean_config(self):
+        """StoreConfig(similarity='euclidean')으로 검색 동작 확인."""
+        with tempfile.TemporaryDirectory() as d:
+            store = SqliteVectorStore(StoreConfig(db_path=os.path.join(d, "t.db"), similarity="euclidean"))
+            store.save_chunks([Chunk("hello", 0, "d1", "src.txt", "pdf")], [[1.0, 0.0, 0.0]])
+            results = store.search_similar([1.0, 0.0, 0.0], top_k=5)
+            self.assertEqual(len(results), 1)
+            self.assertAlmostEqual(results[0]["score"], 1.0, places=3)
+            store.close()
+    def test_invalid_similarity_raises_error(self):
+        """지원하지 않는 유사도 타입 → ValueError 확인."""
+        with self.assertRaises(ValueError):
+            SqliteVectorStore(StoreConfig(db_path=":memory:", similarity="manhattan"))
 
 
 class TestPipeline(unittest.TestCase):

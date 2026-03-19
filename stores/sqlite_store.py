@@ -14,6 +14,10 @@ class SqliteVectorStore(BaseStore):
         if isinstance(config, str):
             config = StoreConfig(db_path=config)
         self._conn = sqlite3.connect(config.db_path)
+        self._similarity_type = getattr(config, "similarity", "cosine")
+        if self._similarity_type not in ("cosine", "euclidean"):
+            raise ValueError(f"지원하지 않는 유사도: {self._similarity_type} "
+                             f"(가능: cosine, euclidean)")
         self._init_tables()
 
     def close(self):
@@ -61,7 +65,10 @@ class SqliteVectorStore(BaseStore):
             chunk_emb = json.loads(row[3])
             if not chunk_emb or all(v == 0.0 for v in chunk_emb):
                 continue
-            score = self._cosine_similarity(query_embedding, chunk_emb)
+            if self._similarity_type == "euclidean":
+                score = self._euclidean_similarity(query_embedding, chunk_emb)
+            else:
+                score = self._cosine_similarity(query_embedding, chunk_emb)
             results.append({"chunk_id": row[0], "doc_id": row[1],
                             "content": row[2], "score": score})
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -81,8 +88,14 @@ class SqliteVectorStore(BaseStore):
 
     @staticmethod
     def _cosine_similarity(a, b):
-        """코사인 유사도 — calc_similarity에서 이름 변경."""
+        """코사인 유사도 — 벡터 방향 기반, 범위: 0.0 ~ 1.0."""
         dot = sum(x * y for x, y in zip(a, b))
         norm_a = sum(x ** 2 for x in a) ** 0.5
         norm_b = sum(x ** 2 for x in b) ** 0.5
         return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+    @staticmethod
+    def _euclidean_similarity(a, b):
+        """유클리드 유사도 — 거리 역수, 범위: 0.0 ~ 1.0."""
+        dist = sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+        return 1.0 / (1.0 + dist)
