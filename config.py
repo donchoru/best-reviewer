@@ -20,6 +20,7 @@ class EmbedConfig:
 @dataclass(frozen=True)
 class StoreConfig:
     db_path: str = "/tmp/rag_assets.db"
+    similarity: str = "cosine"  # cosine | euclidean | dot
 
 
 @dataclass(frozen=True)

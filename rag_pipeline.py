@@ -47,7 +47,7 @@ class RAGSystem:
         return self._pipeline._embedder.embed_batch(texts)
 
     def calc_similarity(self, a, b):
-        return SqliteVectorStore._cosine_similarity(a, b)
+        return self._pipeline._store._calc_similarity(a, b)
 
     def ingest(self, source_type, source):
         return self._pipeline.ingest(source_type, source)
